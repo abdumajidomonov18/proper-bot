@@ -137,7 +137,7 @@ class StudentClient:
     
     def get_coins(self):
         if not self.dash_html or 'tanga' not in self.dash_html.lower():
-            resp = self._get_page(f"{BASE_URL}/student/profile")
+            resp = self._get_page(f"{BASE_URL}/student/dashboard")
             self.dash_html = resp.text
         soup = BeautifulSoup(self.dash_html, 'html.parser')
         for p in soup.find_all('p'):
@@ -149,7 +149,7 @@ class StudentClient:
 
     def get_crystals(self):
         if not self.dash_html or 'kristal' not in self.dash_html.lower():
-            resp = self._get_page(f"{BASE_URL}/student/profile")
+            resp = self._get_page(f"{BASE_URL}/student/dashboard")
             self.dash_html = resp.text
         soup = BeautifulSoup(self.dash_html, 'html.parser')
         for p in soup.find_all('p'):

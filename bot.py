@@ -167,7 +167,7 @@ def delete_user_session(telegram_id):
 
 def verify_client_session(client):
     try:
-        resp = client.session.get("https://proper.lc-up.com/student/profile", headers=client.headers, allow_redirects=True)
+        resp = client.session.get("https://proper.lc-up.com/student/dashboard", headers=client.headers, allow_redirects=True)
         if resp.status_code == 200 and "student" in resp.url and "login" not in resp.url:
             client.dash_html = resp.text
             return True
