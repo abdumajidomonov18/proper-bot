@@ -32,7 +32,7 @@ import time
 from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest
 
-TOKEN = os.getenv("BOT_TOKEN", "7622338276:AAE9YEpg4Pj6PthrrTdmVvBJWeeshquKT1A")
+TOKEN = os.getenv("BOT_TOKEN", "7622338276:AAG4x9KJREIo4OZhz2gPcif0SzODTIJ-kHA")
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -167,8 +167,8 @@ def delete_user_session(telegram_id):
 
 def verify_client_session(client):
     try:
-        resp = client.session.get("https://proper.lc-up.com/student/dashboard", headers=client.headers, allow_redirects=False)
-        if resp.status_code == 200 and "dashboard" in resp.text.lower():
+        resp = client.session.get("https://proper.lc-up.com/student/profile", headers=client.headers, allow_redirects=True)
+        if resp.status_code == 200 and "student" in resp.url and "login" not in resp.url:
             client.dash_html = resp.text
             return True
     except Exception:
@@ -178,37 +178,39 @@ def verify_client_session(client):
 async def get_client(chat_id) -> StudentClient:
     client = users_db.get(chat_id)
     if client:
-        return client
-        
+        is_active = await asyncio.to_thread(verify_client_session, client)
+        if is_active:
+            return client
+
     session_data = get_user_session(chat_id)
     if not session_data:
         return None
-        
+
     client = StudentClient(session_data['phone'], session_data['password'])
-    client.selected_student_id = session_data['student_id']
-    
-    if session_data['cookies']:
+    client.selected_student_id = session_data.get('student_id')
+
+    if session_data.get('cookies'):
         client.session.cookies.update(requests.utils.cookiejar_from_dict(session_data['cookies']))
         client.is_logged_in = True
-        
+
     is_active = await asyncio.to_thread(verify_client_session, client)
     if is_active:
         users_db[chat_id] = client
         return client
-        
+
     logging.info(f"Session expired or restarted for {chat_id}. Attempting auto-login...")
     try:
         res = await asyncio.to_thread(client.login)
-        if res.get('status') == 'SUCCESS':
-            if session_data['student_id']:
-                await asyncio.to_thread(client.select_student, session_data['student_id'])
-            
-            save_user_session(chat_id, session_data['phone'], session_data['password'], session_data['student_id'], client.session)
+        if res.get('status') in ['SUCCESS', 'NEEDS_SELECTION']:
+            if session_data.get('student_id'):
+                await asyncio.to_thread(client.select_student, str(session_data['student_id']))
+
+            save_user_session(chat_id, session_data['phone'], session_data['password'], session_data.get('student_id'), client.session)
             users_db[chat_id] = client
             return client
     except Exception as e:
         logging.error(f"Auto-login failed for {chat_id}: {e}")
-        
+
     return None
 
 # ─────────────────────────────────────
