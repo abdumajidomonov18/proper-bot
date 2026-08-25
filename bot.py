@@ -86,7 +86,7 @@ temp_clients = {}
 import sqlite3
 import requests
 
-DB_FILE = "bot_sessions.db"
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_sessions.db")
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -139,7 +139,7 @@ def save_user_session(telegram_id, phone, password, student_id, session):
     c.execute('''
         INSERT OR REPLACE INTO users (telegram_id, phone, password, student_id, cookies)
         VALUES (?, ?, ?, ?, ?)
-    ''', (telegram_id, phone, password, str(student_id), json.dumps(cookies_dict)))
+    ''', (telegram_id, phone, password, str(student_id or ''), json.dumps(cookies_dict)))
     conn.commit()
     conn.close()
 
@@ -176,38 +176,43 @@ def verify_client_session(client):
     return False
 
 async def get_client(chat_id) -> StudentClient:
+    session_data = get_user_session(chat_id)
+    if not session_data:
+        users_db.pop(chat_id, None)
+        return None
+
     client = users_db.get(chat_id)
     if client:
         is_active = await asyncio.to_thread(verify_client_session, client)
         if is_active:
             return client
+        else:
+            users_db.pop(chat_id, None)
 
-    session_data = get_user_session(chat_id)
-    if not session_data:
-        return None
-
+    # Try saved cookies first
     client = StudentClient(session_data['phone'], session_data['password'])
     client.selected_student_id = session_data.get('student_id')
 
     if session_data.get('cookies'):
         client.session.cookies.update(requests.utils.cookiejar_from_dict(session_data['cookies']))
         client.is_logged_in = True
-
-    is_active = await asyncio.to_thread(verify_client_session, client)
-    if is_active:
-        users_db[chat_id] = client
-        return client
-
-    logging.info(f"Session expired or restarted for {chat_id}. Attempting auto-login...")
-    try:
-        res = await asyncio.to_thread(client.login)
-        if res.get('status') in ['SUCCESS', 'NEEDS_SELECTION']:
-            if session_data.get('student_id'):
-                await asyncio.to_thread(client.select_student, str(session_data['student_id']))
-
-            save_user_session(chat_id, session_data['phone'], session_data['password'], session_data.get('student_id'), client.session)
+        is_active = await asyncio.to_thread(verify_client_session, client)
+        if is_active:
             users_db[chat_id] = client
             return client
+
+    # Clean auto-login if cookies expired or missing
+    logging.info(f"Session expired or missing for {chat_id}. Performing clean auto-login...")
+    clean_client = StudentClient(session_data['phone'], session_data['password'])
+    try:
+        res = await asyncio.to_thread(clean_client.login)
+        if res.get('status') in ['SUCCESS', 'NEEDS_SELECTION']:
+            if session_data.get('student_id'):
+                await asyncio.to_thread(clean_client.select_student, str(session_data['student_id']))
+
+            save_user_session(chat_id, session_data['phone'], session_data['password'], session_data.get('student_id'), clean_client.session)
+            users_db[chat_id] = clean_client
+            return clean_client
     except Exception as e:
         logging.error(f"Auto-login failed for {chat_id}: {e}")
 
