@@ -1,4 +1,3 @@
-import os
 import asyncio
 import logging
 import json
@@ -28,11 +27,55 @@ from proper_bot_full import (
     solve_checkbox
 )
 
-TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+import os
+import time
+from aiogram import BaseMiddleware
+from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest
+
+TOKEN = os.getenv("BOT_TOKEN", "7622338276:AAE9YEpg4Pj6PthrrTdmVvBJWeeshquKT1A")
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+class AntiFloodMiddleware(BaseMiddleware):
+    def __init__(self, rate_limit: float = 0.6):
+        self.rate_limit = rate_limit
+        self.last_user_time = {}
+
+    async def __call__(self, handler, event, data):
+        user_id = None
+        if hasattr(event, "from_user") and event.from_user:
+            user_id = event.from_user.id
+        elif hasattr(event, "message") and event.message and event.message.from_user:
+            user_id = event.message.from_user.id
+
+        if user_id:
+            now = time.time()
+            last = self.last_user_time.get(user_id, 0)
+            elapsed = now - last
+            if elapsed < self.rate_limit:
+                await asyncio.sleep(self.rate_limit - elapsed)
+            self.last_user_time[user_id] = time.time()
+
+        try:
+            return await handler(event, data)
+        except TelegramRetryAfter as e:
+            logging.warning(f"TelegramRetryAfter: waiting {e.retry_after}s for user {user_id}")
+            await asyncio.sleep(e.retry_after + 0.5)
+            try:
+                return await handler(event, data)
+            except Exception as retry_err:
+                logging.error(f"Retry failed after retry_after: {retry_err}")
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e).lower():
+                return
+            logging.error(f"TelegramBadRequest: {e}")
+        except Exception as e:
+            logging.error(f"Handler exception: {e}")
+
+dp.message.middleware(AntiFloodMiddleware(rate_limit=0.6))
+dp.callback_query.middleware(AntiFloodMiddleware(rate_limit=0.6))
 
 users_db = {}
 temp_clients = {}
@@ -573,14 +616,13 @@ async def show_groups(message: types.Message):
 
     msg = await message.answer("👥 Guruhlaringiz yuklanmoqda...")
     groups = await asyncio.to_thread(client.get_groups)
-    await msg.delete()
 
     if not groups:
-        await message.answer("📭 Sizda hech qanday guruh topilmadi.")
+        await msg.edit_text("📭 Sizda hech qanday guruh topilmadi.")
         return
 
     text, markup = build_groups_view(groups)
-    await message.answer(text, parse_mode="HTML", reply_markup=markup)
+    await msg.edit_text(text, parse_mode="HTML", reply_markup=markup)
 
 @dp.callback_query(F.data.startswith("group_det_"))
 async def process_group_detail(callback: types.CallbackQuery):
@@ -641,9 +683,8 @@ async def show_books(message: types.Message):
     msg = await message.answer("📖 Kurslar ro'yxati yuklanmoqda...")
     books = await asyncio.to_thread(client.get_books)
 
-    await msg.delete()
     if not books:
-        await message.answer("📭 Sizda hech qanday kurs topilmadi.")
+        await msg.edit_text("📭 Sizda hech qanday kurs topilmadi.")
         return
 
     text = "📚 <b>Sizning kurslaringiz:</b>\n\n"
@@ -1145,10 +1186,17 @@ async def start_auto_solver(message: types.Message):
     task = asyncio.create_task(asyncio.to_thread(run_auto_solver_sync, client, progress))
 
     last_text = ""
+    last_edit_time = 0
+    last_done = -1
+
     while not progress['finished']:
-        await asyncio.sleep(2)
+        await asyncio.sleep(2.5)
         if progress['finished']:
             break
+
+        now = time.time()
+        if now - last_edit_time < 4.0:
+            continue
 
         if progress['stage'] == 'scanning':
             text = (
@@ -1159,6 +1207,9 @@ async def start_auto_solver(message: types.Message):
         else:
             total = progress['total']
             done = progress['done']
+            if done == last_done:
+                continue
+            last_done = done
             pct = int((done / total) * 100) if total > 0 else 0
 
             bar_len = 15
@@ -1176,21 +1227,21 @@ async def start_auto_solver(message: types.Message):
             try:
                 await msg.edit_text(text, parse_mode="HTML")
                 last_text = text
+                last_edit_time = time.time()
             except Exception:
                 pass
 
     try:
         total_solved = await task
-        await msg.delete()
         if total_solved == 0:
-            await message.answer(
+            await msg.edit_text(
                 "🎉 <b>Hammasi tayyor!</b>\n\n"
                 "Barcha mashqlar allaqachon 100% bajarilgan\n"
                 "yoki hozircha ochiq mashqlar yo'q.",
                 parse_mode="HTML"
             )
         else:
-            await message.answer(
+            await msg.edit_text(
                 f"🏆 <b>Avtomatik yechish yakunlandi!</b>\n\n"
                 f"📊 Jami <b>{total_solved} ta</b> mashq topildi va yechildi.\n"
                 f"✅ Barchasi <b>100%</b> ga yetkazildi!\n\n"
@@ -1198,8 +1249,11 @@ async def start_auto_solver(message: types.Message):
                 parse_mode="HTML"
             )
     except Exception as e:
-        await msg.delete()
-        await message.answer(f"❌ <b>Xatolik yuz berdi:</b>\n<code>{e}</code>", parse_mode="HTML")
+        logging.error(f"Error finishing auto solve: {e}")
+        try:
+            await msg.edit_text(f"❌ <b>Xatolik yuz berdi:</b>\n<code>{e}</code>", parse_mode="HTML")
+        except Exception:
+            pass
 
 # ─────────────────────────────────────
 #  Start polling
